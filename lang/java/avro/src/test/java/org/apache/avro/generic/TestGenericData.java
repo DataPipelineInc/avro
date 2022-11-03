@@ -31,6 +31,7 @@ import com.fasterxml.jackson.core.JsonParseException;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.avro.AvroRuntimeException;
+import org.apache.avro.LogicalTypes;
 import org.apache.avro.Schema;
 import org.apache.avro.Schema.Field;
 import org.apache.avro.Schema.Type;
@@ -600,6 +601,29 @@ public class TestGenericData {
     fields.add(new Field("map1", mapSchema, null, null));
     fields.add(new Field("map2", mapSchema, null, null));
 
+    final Schema nullSchema = Schema.create(Type.NULL);
+    Schema byteSchema = Schema.create(Type.BYTES);
+    final LogicalTypes.Decimal decimal = LogicalTypes.decimal(32, 0);
+    byteSchema = decimal.addToSchema(byteSchema);
+
+    final Schema decimalSchema = Schema.createUnion(byteSchema, nullSchema);
+    fields.add(new Field("decimal", decimalSchema, null, null));
+
+    List<Field> variableScaleDecimalFields = new ArrayList<>();
+    variableScaleDecimalFields.add(new Field("scale", Schema.create(Type.INT), null, null));
+    variableScaleDecimalFields.add(new Field("value", Schema.create(Type.BYTES), null, null));
+    final Schema variableScaleDecimalSchema = Schema.createRecord("VariableScaleDecimal", null, "io.debezium.data",
+        false);
+    variableScaleDecimalSchema.setFields(variableScaleDecimalFields);
+    fields.add(new Field("variableScaleDecimal", variableScaleDecimalSchema, null, null));
+
+    final Record variableScaleDecimalRecord = new Record(variableScaleDecimalSchema);
+    final ByteBuffer byteBuffer = ByteBuffer.allocate(2);
+    byteBuffer.put((byte) 2);
+    byteBuffer.put((byte) 53);
+    variableScaleDecimalRecord.put("scale", 0);
+    variableScaleDecimalRecord.put("value", byteBuffer.duplicate());
+
     Schema schema = Schema.createRecord("Foo", "test", "mytest", false);
     schema.setFields(fields);
 
@@ -642,6 +666,9 @@ public class TestGenericData {
     map.put("42", "42");
     testRecord.put("map1", map);
     testRecord.put("map2", map);
+
+    testRecord.put("decimal", byteBuffer.duplicate());
+    testRecord.put("variableScaleDecimal", variableScaleDecimalRecord);
 
     String testString = testRecord.toString();
     assertFalse("Record with duplicated values results in wrong 'toString()'",

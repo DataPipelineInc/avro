@@ -19,6 +19,8 @@ package org.apache.avro.generic;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.AbstractList;
@@ -40,6 +42,7 @@ import org.apache.avro.Conversion;
 import org.apache.avro.Conversions;
 import org.apache.avro.JsonProperties;
 import org.apache.avro.LogicalType;
+import org.apache.avro.LogicalTypes;
 import org.apache.avro.Schema;
 import org.apache.avro.Schema.Field;
 import org.apache.avro.Schema.Type;
@@ -74,6 +77,9 @@ public class GenericData {
 
   public static final String STRING_PROP = "avro.java.string";
   protected static final String STRING_TYPE_STRING = "String";
+  private static final String VARIABLE_SCALE_DECIMAL_RECORD = "VariableScaleDecimal";
+  private static final String VARIABLE_SCALE_DECIMAL_RECORD_SCALE = "scale";
+  private static final String VARIABLE_SCALE_DECIMAL_RECORD_VALUE = "value";
 
   private final ClassLoader classLoader;
 
@@ -626,23 +632,42 @@ public class GenericData {
 
   /** Renders a Java datum as <a href="https://www.json.org/">JSON</a>. */
   protected void toString(Object datum, StringBuilder buffer, IdentityHashMap<Object, Object> seenObjects) {
+    toString(datum, buffer, seenObjects, null);
+  }
+
+  /** Renders a Java datum as <a href="http://www.json.org/">JSON</a>. */
+  protected void toString(Object datum, StringBuilder buffer, IdentityHashMap<Object, Object> seenObjects,
+      Schema fieldSchema) {
     if (isRecord(datum)) {
       if (seenObjects.containsKey(datum)) {
         buffer.append(TOSTRING_CIRCULAR_REFERENCE_ERROR_TEXT);
         return;
       }
       seenObjects.put(datum, datum);
-      buffer.append("{");
-      int count = 0;
       Schema schema = getRecordSchema(datum);
-      for (Field f : schema.getFields()) {
-        toString(f.name(), buffer, seenObjects);
-        buffer.append(": ");
-        toString(getField(datum, f.name(), f.pos()), buffer, seenObjects);
-        if (++count < schema.getFields().size())
-          buffer.append(", ");
+
+      boolean isVariableScaleDecimal = false;
+      if (VARIABLE_SCALE_DECIMAL_RECORD.equals(schema.getName())) {
+        try {
+          writeVariableScaleDecimalToString((Record) datum, buffer);
+          isVariableScaleDecimal = true;
+        } catch (Throwable t) {
+          // if have exception, isVariableScaleDecimal is false
+        }
       }
-      buffer.append("}");
+
+      if (!isVariableScaleDecimal) {
+        buffer.append("{");
+        int count = 0;
+        for (Field f : schema.getFields()) {
+          toString(f.name(), buffer, seenObjects);
+          buffer.append(": ");
+          toString(getField(datum, f.name(), f.pos()), buffer, seenObjects, f.schema());
+          if (++count < schema.getFields().size())
+            buffer.append(", ");
+        }
+        buffer.append("}");
+      }
       seenObjects.remove(datum);
     } else if (isArray(datum)) {
       if (seenObjects.containsKey(datum)) {
@@ -688,7 +713,7 @@ public class GenericData {
     } else if (isBytes(datum)) {
       buffer.append("\"");
       ByteBuffer bytes = ((ByteBuffer) datum).duplicate();
-      writeEscapedString(StandardCharsets.ISO_8859_1.decode(bytes), buffer);
+      writeBytesToString(bytes, buffer, fieldSchema);
       buffer.append("\"");
     } else if (((datum instanceof Float) && // quote Nan & Infinity
         (((Float) datum).isInfinite() || ((Float) datum).isNaN()))
@@ -706,6 +731,40 @@ public class GenericData {
       seenObjects.remove(datum);
     } else {
       buffer.append(datum);
+    }
+  }
+
+  private void writeVariableScaleDecimalToString(Record datum, StringBuilder builder) {
+    final int scale = (int) datum.get(VARIABLE_SCALE_DECIMAL_RECORD_SCALE);
+    final ByteBuffer value = (ByteBuffer) datum.get(VARIABLE_SCALE_DECIMAL_RECORD_VALUE);
+    final BigDecimal bigDecimal = new BigDecimal(new BigInteger(value.duplicate().array()), scale);
+    builder.append(bigDecimal);
+  }
+
+  private void writeBytesToString(ByteBuffer byteBuffer, StringBuilder builder, Schema fieldSchema) {
+    boolean isDecimal = false;
+    if (fieldSchema != null && Type.UNION.equals(fieldSchema.getType())) {
+      try {
+        final List<Schema> fieldTypes = fieldSchema.getTypes();
+        for (final Schema fieldType : fieldTypes) {
+          // make sure field type is not NULL
+          if (!Type.NULL.equals(fieldType.getType())) {
+            LogicalType logicalType = fieldType.getLogicalType();
+            if (logicalType instanceof LogicalTypes.Decimal) {
+              final BigDecimal decimal = new BigDecimal(new BigInteger(byteBuffer.duplicate().array()),
+                  ((LogicalTypes.Decimal) logicalType).getScale());
+              builder.append(decimal);
+              isDecimal = true;
+              break;
+            }
+          }
+        }
+      } catch (Throwable t) {
+        // do something
+      }
+    }
+    if (!isDecimal) {
+      writeEscapedString(StandardCharsets.ISO_8859_1.decode(byteBuffer.duplicate()), builder);
     }
   }
 
